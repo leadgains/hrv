@@ -15,6 +15,11 @@ from scanner import scan_for_pennies
 from trader import Trader
 from notifier import TelegramNotifier
 from researcher import research_opportunities, format_research_for_telegram
+from musk_analyzer import (
+    fetch_musk_tweet_markets,
+    analyze_musk_markets,
+    format_musk_analysis_telegram,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -134,6 +139,43 @@ def main():
     )
 
     log.info(trader.get_summary())
+
+    # --musk: Elon Musk tweet strategy (Annica-style)
+    if "--musk" in sys.argv:
+        log.info("Musk Tweet Strategy mode")
+        musk_opps = fetch_musk_tweet_markets(client)
+        if not musk_opps:
+            log.info("No Musk tweet markets found")
+            return
+
+        picks = analyze_musk_markets(musk_opps, budget=config.total_budget)
+        if not picks:
+            log.info("Claude found no good Musk picks")
+            return
+
+        # Send analysis to Telegram
+        notifier.send_sync(format_musk_analysis_telegram(picks))
+
+        if "--dry" not in sys.argv:
+            for pick in picks:
+                opp = pick["opportunity"]
+                amount = pick["amount"]
+                can, reason = trader.can_trade(amount)
+                if not can:
+                    log.warning(f"Cannot trade: {reason}")
+                    break
+                resp = trader.execute_trade(opp, amount)
+                if resp:
+                    msg = (
+                        f"🐦 <b>Musk Buy!</b>\n"
+                        f"{opp.market_question[:80]}\n"
+                        f"{opp.outcome} @ {opp.price*100:.1f}¢ — ${amount:.2f}\n"
+                        f"Reason: {pick['reasoning'][:100]}"
+                    )
+                    notifier.send_sync(msg)
+                    time.sleep(2)
+            log.info(trader.get_summary())
+        return
 
     # --research: AI analysis only, no trading
     if "--research" in sys.argv:
