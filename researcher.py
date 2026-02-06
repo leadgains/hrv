@@ -3,7 +3,10 @@
 import os
 import json
 import logging
-import httpx
+try:
+    import httpx
+except ImportError:
+    httpx = None
 from dataclasses import dataclass
 
 from scanner import PennyOpportunity

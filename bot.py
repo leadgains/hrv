@@ -8,7 +8,13 @@ opportunities, then auto-buys the best ones.
 import logging
 import time
 import sys
-from py_clob_client.client import ClobClient
+
+DEMO_MODE = "--demo" in sys.argv
+
+try:
+    from py_clob_client.client import ClobClient
+except ImportError:
+    ClobClient = None
 
 from config import Config
 from scanner import scan_for_pennies
@@ -20,8 +26,6 @@ from musk_analyzer import (
     analyze_musk_markets,
     format_musk_analysis_telegram,
 )
-
-DEMO_MODE = "--demo" in sys.argv
 
 logging.basicConfig(
     level=logging.INFO,

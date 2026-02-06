@@ -2,7 +2,11 @@
 
 import logging
 from dataclasses import dataclass
-from py_clob_client.client import ClobClient
+
+try:
+    from py_clob_client.client import ClobClient
+except ImportError:
+    ClobClient = None
 
 log = logging.getLogger(__name__)
 

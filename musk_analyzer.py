@@ -4,7 +4,10 @@ import os
 import json
 import logging
 from datetime import datetime, timedelta
-import httpx
+try:
+    import httpx
+except ImportError:
+    httpx = None
 
 from scanner import PennyOpportunity
 

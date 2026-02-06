@@ -6,9 +6,13 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, date
 from pathlib import Path
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import MarketOrderArgs, OrderArgs, OrderType
-from py_clob_client.order_builder.constants import BUY
+
+try:
+    from py_clob_client.client import ClobClient
+    from py_clob_client.clob_types import MarketOrderArgs, OrderArgs, OrderType
+    from py_clob_client.order_builder.constants import BUY
+except ImportError:
+    ClobClient = None  # Demo mode — no trading
 
 from config import Config
 from scanner import PennyOpportunity
