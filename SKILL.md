@@ -42,7 +42,13 @@ AI-powered Polymarket penny trading bot. Scans for shares priced 1-9c, tracks El
 
 ## Commands
 
-### Start dashboard (recommended)
+### Start Telegram bot (recommended)
+```bash
+scripts/penny.sh telegram
+```
+Control everything via Telegram — /scan, /research, /musk, /tweets, /portfolio, /report, /start, /stop.
+
+### Start dashboard
 ```bash
 scripts/penny.sh dashboard
 ```
@@ -116,8 +122,23 @@ DAILY_LOSS_LIMIT=20.0
 CHECK_INTERVAL_SECONDS=60
 ```
 
+### Start Telegram bot
+```bash
+scripts/penny.sh telegram
+```
+Or directly: `python3 telegram_bot.py`
+
+## Quick Start (Telegram)
+
+1. Set your `TELEGRAM_BOT_TOKEN` in `.env` (get from @BotFather)
+2. Set your `TELEGRAM_CHAT_ID` in `.env`
+3. Run: `scripts/penny.sh telegram`
+4. Send `/help` to your bot on Telegram
+5. Send `/start` to begin auto-trading
+
 ## Usage Examples
 
+- "Start the Telegram bot"
 - "Start the dashboard"
 - "Scan polymarket for penny opportunities"
 - "How many tweets has Musk posted this week?"

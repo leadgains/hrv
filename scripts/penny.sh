@@ -53,6 +53,9 @@ from tweet_tracker import get_musk_activity_summary
 print(get_musk_activity_summary())
 "
         ;;
+    telegram)
+        cd "$BOT_DIR" && python3 telegram_bot.py
+        ;;
     dashboard)
         cd "$BOT_DIR" && python3 dashboard.py
         ;;
@@ -109,6 +112,7 @@ print(trader.get_summary())
         ;;
     help|*)
         echo "Polymarket Penny Bot — Commands:"
+        echo "  telegram   — Start Telegram bot (control via @your_bot)"
         echo "  dashboard  — Start web dashboard (localhost:8888)"
         echo "  scan       — List penny-priced shares"
         echo "  research   — AI analysis of opportunities"
