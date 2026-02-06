@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
-Polymarket Penny Bot 🎰
-Automatically buys shares priced 1-9 cents on Polymarket.
-Sends notifications via Telegram.
+Polymarket Penny Bot 🎰 + AI Research 🧠
+Scans Polymarket for 1-9¢ shares, uses Claude to identify mispriced
+opportunities, then auto-buys the best ones.
 """
 
 import logging
 import time
-import random
 import sys
 from py_clob_client.client import ClobClient
 
@@ -15,6 +14,7 @@ from config import Config
 from scanner import scan_for_pennies
 from trader import Trader
 from notifier import TelegramNotifier
+from researcher import research_opportunities, format_research_for_telegram
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,32 +45,10 @@ def create_client(config: Config) -> ClobClient:
     return client
 
 
-def pick_best_opportunities(opportunities, max_picks=5):
-    """Score and rank penny opportunities.
-
-    Prefers:
-    - Lower prices (more upside)
-    - Markets expiring soon (faster resolution)
-    """
-    scored = []
-    for opp in opportunities:
-        # Lower price = higher score (more upside)
-        price_score = (10 - opp.price * 100) / 10
-        scored.append((price_score, opp))
-
-    scored.sort(key=lambda x: x[0], reverse=True)
-
-    # Add some randomness - don't always pick the same ones
-    top = scored[:max_picks * 3]
-    if len(top) > max_picks:
-        random.shuffle(top)
-        top = top[:max_picks]
-
-    return [opp for _, opp in top]
-
-
 def run_scan_cycle(client, trader, notifier, config):
-    """Run one scan + trade cycle."""
+    """Run one scan + AI research + trade cycle."""
+
+    # Step 1: Scan for penny shares
     opportunities = scan_for_pennies(
         client,
         min_cents=config.min_price_cents,
@@ -89,9 +67,27 @@ def run_scan_cycle(client, trader, notifier, config):
         log.info("No new opportunities to trade")
         return
 
-    picks = pick_best_opportunities(new_opps, max_picks=3)
+    # Step 2: AI Research — Claude analyzes which ones are mispriced
+    log.info(f"Sending {len(new_opps)} opportunities to Claude for analysis...")
+    research_results = research_opportunities(new_opps, batch_size=15)
 
-    for opp in picks:
+    # Send research summary to Telegram
+    research_msg = format_research_for_telegram(research_results)
+    notifier.send_sync(research_msg)
+    log.info(research_msg)
+
+    # Step 3: Only buy what Claude recommends
+    buys = [r for r in research_results if r.recommendation == "BUY"]
+    buys.sort(key=lambda r: r.score, reverse=True)
+
+    if not buys:
+        log.info("Claude found no mispriced opportunities this cycle")
+        return
+
+    log.info(f"Claude recommends {len(buys)} buys")
+
+    for result in buys:
+        opp = result.opportunity
         can, reason = trader.can_trade(config.max_spend_per_trade)
         if not can:
             log.warning(f"Stopping trades: {reason}")
@@ -106,23 +102,21 @@ def run_scan_cycle(client, trader, notifier, config):
         resp = trader.execute_trade(opp, amount)
         if resp:
             msg = (
-                f"🎰 <b>Penny Buy!</b>\n"
+                f"🎰 <b>Penny Buy!</b> (AI Score: {result.score}/100)\n"
                 f"Market: {opp.market_question[:80]}\n"
                 f"Side: {opp.outcome} @ {opp.price*100:.1f}¢\n"
-                f"Spent: ${amount:.2f}\n"
-                f"Shares: {amount/opp.price:.0f}\n"
+                f"AI estimate: {result.fair_value_estimate*100:.0f}% real chance\n"
+                f"Reason: {result.reasoning[:120]}\n"
+                f"Spent: ${amount:.2f} | Shares: {amount/opp.price:.0f}\n"
                 f"Max payout: ${amount/opp.price:.2f}"
             )
             notifier.send_sync(msg)
-            log.info(f"Trade sent to Telegram")
-
-            # Small delay between trades
             time.sleep(2)
 
 
 def main():
     config = Config()
-    log.info("Starting Polymarket Penny Bot 🎰")
+    log.info("Starting Polymarket Penny Bot 🎰🧠")
     log.info(f"Budget: ${config.total_budget} | Max per trade: ${config.max_spend_per_trade}")
     log.info(f"Price range: {config.min_price_cents}¢ - {config.max_price_cents}¢")
     log.info(f"Check interval: {config.check_interval}s")
@@ -132,27 +126,45 @@ def main():
     notifier = TelegramNotifier(config.telegram_bot_token, config.telegram_chat_id)
 
     notifier.send_sync(
-        f"🚀 <b>Penny Bot Started</b>\n"
+        f"🚀 <b>Penny Bot + AI Research Started</b>\n"
         f"Budget: ${config.total_budget}\n"
         f"Range: {config.min_price_cents}¢-{config.max_price_cents}¢\n"
-        f"Max/trade: ${config.max_spend_per_trade}"
+        f"Max/trade: ${config.max_spend_per_trade}\n"
+        f"AI: Claude analyzes every opportunity before buying"
     )
 
-    # Show current state
     log.info(trader.get_summary())
 
-    if "--once" in sys.argv:
-        log.info("Running single scan cycle (--once mode)")
-        run_scan_cycle(client, trader, notifier, config)
-        log.info(trader.get_summary())
+    # --research: AI analysis only, no trading
+    if "--research" in sys.argv:
+        log.info("Research-only mode (AI analysis, no trading)")
+        opps = scan_for_pennies(client, config.min_price_cents, config.max_price_cents)
+        if opps:
+            results = research_opportunities(opps[:30])
+            print(format_research_for_telegram(results, top_n=10))
+            for r in results[:10]:
+                print(
+                    f"  [{r.recommendation}] {r.score}/100 — "
+                    f"{r.opportunity.outcome} @ {r.opportunity.price*100:.1f}¢ — "
+                    f"{r.opportunity.market_question[:60]}"
+                )
+                print(f"    Reason: {r.reasoning[:100]}")
         return
 
+    # --scan: just list penny shares, no AI, no trading
     if "--scan" in sys.argv:
-        log.info("Scan-only mode (no trading)")
+        log.info("Scan-only mode (no AI, no trading)")
         opps = scan_for_pennies(client, config.min_price_cents, config.max_price_cents)
         for o in opps[:20]:
             print(f"  {o.outcome} @ {o.price*100:.1f}¢ — {o.market_question[:70]}")
         print(f"\nTotal: {len(opps)} penny opportunities")
+        return
+
+    # --once: one full cycle (scan + AI + trade)
+    if "--once" in sys.argv:
+        log.info("Running single cycle (--once mode)")
+        run_scan_cycle(client, trader, notifier, config)
+        log.info(trader.get_summary())
         return
 
     # Main loop
