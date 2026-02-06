@@ -1,4 +1,4 @@
-"""Multi-strategy dashboard — runs 3 paper strategies side by side."""
+"""Multi-strategy dashboard — runs 3 paper strategies + live tweet tracking."""
 from __future__ import annotations
 
 import json
@@ -14,6 +14,8 @@ from scanner import scan_for_pennies, PennyOpportunity
 from paper_trader import PaperTrader, PAPER_FILE
 from researcher import research_opportunities
 from musk_analyzer import fetch_musk_tweet_markets, analyze_musk_markets
+from tweet_tracker import fetch_musk_tweets, count_tweets_this_week
+from trade_analyzer import analyze_trade_open, analyze_trade_close, get_learnings_summary, get_strategy_report
 
 try:
     from py_clob_client.client import ClobClient
@@ -29,6 +31,8 @@ state = {
     "last_scan": "Never",
     "scanning": False,
     "error": None,
+    "tweet_stats": {},
+    "trade_analyses": [],  # Recent AI analyses per trade
     "strategies": {
         "penny_all": {"name": "All Penny (AI picks)", "file": "paper_penny_all.json", "trades": [], "spent": 0, "payout": 0},
         "penny_musk": {"name": "Musk Tweets Only", "file": "paper_penny_musk.json", "trades": [], "spent": 0, "payout": 0},
@@ -60,7 +64,6 @@ def save_strategy(filepath, trades, spent, payout):
 def paper_buy(strategy, opp, amount):
     """Record a virtual buy for a strategy."""
     s = state["strategies"][strategy]
-    # Check if already bought
     bought = {t["token_id"] for t in s["trades"]}
     if opp.token_id in bought:
         return False
@@ -86,17 +89,44 @@ def paper_buy(strategy, opp, amount):
     s["trades"].append(trade)
     s["spent"] += amount
     save_strategy(s["file"], s["trades"], s["spent"], s["payout"])
-    log.info(f"[{strategy}] PAPER BUY: {opp.outcome} @ {opp.price*100:.1f}¢ — ${amount:.2f} — {opp.market_question[:50]}")
+    log.info(f"[{strategy}] PAPER BUY: {opp.outcome} @ {opp.price*100:.1f}c — ${amount:.2f} — {opp.market_question[:50]}")
+
+    # AI analysis on open
+    try:
+        analysis = analyze_trade_open(trade, strategy, s["trades"])
+        if analysis:
+            state["trade_analyses"].append({
+                "time": datetime.now().strftime("%H:%M"),
+                "type": "OPEN",
+                "strategy": strategy,
+                "market": opp.market_question[:40],
+                "analysis": analysis[:200],
+            })
+            # Keep last 20 analyses
+            state["trade_analyses"] = state["trade_analyses"][-20:]
+    except Exception as e:
+        log.debug(f"Trade analysis failed: {e}")
+
     return True
 
 
 def scan_and_trade(config):
-    """Background thread: scan markets and execute all 3 strategies."""
+    """Background thread: scan markets, track tweets, execute strategies."""
     while True:
         state["scanning"] = True
         state["error"] = None
 
         try:
+            # === TWEET TRACKING (always runs) ===
+            try:
+                tweets = fetch_musk_tweets()
+                if tweets:
+                    state["tweet_stats"] = count_tweets_this_week(tweets)
+                    log.info(f"Musk tweets: {state['tweet_stats'].get('tweets_this_week', 0)} this week, "
+                             f"{state['tweet_stats'].get('posting_speed_per_hour', 0)}/hr")
+            except Exception as e:
+                log.debug(f"Tweet fetch failed: {e}")
+
             if ClobClient is None:
                 state["error"] = "py-clob-client not installed — run: pip install py-clob-client"
                 state["scanning"] = False
@@ -134,11 +164,14 @@ def scan_and_trade(config):
                     for r in buys[:5]:
                         paper_buy("penny_all", r.opportunity, max_per_trade)
 
-            # === STRATEGY 2: Musk Only ===
+            # === STRATEGY 2: Musk Only (with real tweet data) ===
             if musk_opps:
-                for opp in musk_opps:
-                    if opp.price <= 0.09:
-                        paper_buy("penny_musk", opp, max_per_trade)
+                # Use tweet-data-driven analysis
+                musk_picks = analyze_musk_markets(musk_opps, budget=100 - state["strategies"]["penny_musk"]["spent"])
+                for pick in musk_picks:
+                    opp = pick["opportunity"]
+                    amt = min(pick["amount"], max_per_trade)
+                    paper_buy("penny_musk", opp, amt)
 
             # === STRATEGY 3: Blind (cheapest first, no AI) ===
             if all_opps:
@@ -159,10 +192,35 @@ def scan_and_trade(config):
                             t["payout"] = t["shares"]
                             t["resolved_at"] = datetime.utcnow().isoformat()
                             s["payout"] += t["payout"]
+                            # AI analysis on close
+                            try:
+                                analysis = analyze_trade_close(t, key, s["trades"])
+                                if analysis:
+                                    state["trade_analyses"].append({
+                                        "time": datetime.now().strftime("%H:%M"),
+                                        "type": "WON",
+                                        "strategy": key,
+                                        "market": t["market"][:40],
+                                        "analysis": analysis[:200],
+                                    })
+                            except Exception:
+                                pass
                         elif price <= 0.01 and t["buy_price"] > 0.01:
                             t["status"] = "lost"
                             t["payout"] = 0
                             t["resolved_at"] = datetime.utcnow().isoformat()
+                            try:
+                                analysis = analyze_trade_close(t, key, s["trades"])
+                                if analysis:
+                                    state["trade_analyses"].append({
+                                        "time": datetime.now().strftime("%H:%M"),
+                                        "type": "LOST",
+                                        "strategy": key,
+                                        "market": t["market"][:40],
+                                        "analysis": analysis[:200],
+                                    })
+                            except Exception:
+                                pass
                     except Exception:
                         pass
                 save_strategy(s["file"], s["trades"], s["spent"], s["payout"])
@@ -188,14 +246,14 @@ def render_strategy_card(key, s):
 
     trade_rows = ""
     for t in trades[-10:]:
-        icon = {"open": "⏳", "won": "✅", "lost": "❌"}.get(t["status"], "?")
+        icon = {"open": "&#9203;", "won": "&#9989;", "lost": "&#10060;"}.get(t["status"], "?")
         change = ((t["current_price"] - t["buy_price"]) / t["buy_price"] * 100) if t["buy_price"] > 0 else 0
         trade_rows += f"""
         <tr class="{t['status']}">
             <td>{icon}</td>
             <td>{t['outcome']}</td>
-            <td>{t['buy_price']*100:.1f}¢</td>
-            <td>{t['current_price']*100:.1f}¢</td>
+            <td>{t['buy_price']*100:.1f}c</td>
+            <td>{t['current_price']*100:.1f}c</td>
             <td>{change:+.0f}%</td>
             <td>${t['amount']:.2f}</td>
             <td>{t['market'][:45]}</td>
@@ -206,43 +264,107 @@ def render_strategy_card(key, s):
         <h2>{s['name']}</h2>
         <div class="stats">
             <div class="stat"><div class="label">Spent</div><div class="value">${spent:.2f}</div></div>
-            <div class="stat"><div class="label">P&L</div><div class="value {'green' if pnl >= 0 else 'red'}">${pnl:+.2f}</div></div>
+            <div class="stat"><div class="label">P&amp;L</div><div class="value {'green' if pnl >= 0 else 'red'}">${pnl:+.2f}</div></div>
             <div class="stat"><div class="label">Unrealized</div><div class="value yellow">${unrealized:.2f}</div></div>
-            <div class="stat"><div class="label">Positions</div><div class="value">{open_t}⏳ {won_t}✅ {lost_t}❌</div></div>
+            <div class="stat"><div class="label">Positions</div><div class="value">{open_t} open / {won_t}W / {lost_t}L</div></div>
         </div>
         {'<table><tr><th></th><th>Side</th><th>Buy</th><th>Now</th><th>Chg</th><th>$</th><th>Market</th></tr>' + trade_rows + '</table>' if trade_rows else '<p style="color:#555">No trades yet...</p>'}
     </div>"""
 
 
+def render_tweet_panel():
+    """Render the Musk tweet tracking panel."""
+    stats = state.get("tweet_stats", {})
+    if not stats:
+        return '<div class="tweet-panel"><h2>Musk Tweet Tracker</h2><p style="color:#555">Loading tweet data...</p></div>'
+
+    speed = stats.get("posting_speed_per_hour", 0)
+    if speed > 5:
+        level = "STORM"
+        level_color = "#ff4444"
+    elif speed > 3:
+        level = "ACTIVE"
+        level_color = "#ffcc00"
+    elif speed > 1.5:
+        level = "NORMAL"
+        level_color = "#00ff88"
+    elif speed > 0.5:
+        level = "QUIET"
+        level_color = "#4488ff"
+    else:
+        level = "SILENT"
+        level_color = "#555"
+
+    return f"""
+    <div class="tweet-panel">
+        <h2>Musk Tweet Tracker (LIVE)</h2>
+        <div class="stats">
+            <div class="stat"><div class="label">This Week</div><div class="value">{stats.get('tweets_this_week', '?')}</div></div>
+            <div class="stat"><div class="label">Today</div><div class="value">{stats.get('tweets_today', '?')}</div></div>
+            <div class="stat"><div class="label">Speed</div><div class="value">{speed:.1f}/hr</div></div>
+            <div class="stat"><div class="label">Activity</div><div class="value" style="color:{level_color}">{level}</div></div>
+            <div class="stat"><div class="label">Projected</div><div class="value yellow">{stats.get('projected_weekly_total', '?')}</div></div>
+            <div class="stat"><div class="label">Range</div><div class="value">{stats.get('projected_range', '?')}</div></div>
+            <div class="stat"><div class="label">Hours Left</div><div class="value">{stats.get('hours_remaining', '?'):.0f}h</div></div>
+        </div>
+    </div>"""
+
+
+def render_analysis_panel():
+    """Render the AI trade analysis feed."""
+    analyses = state.get("trade_analyses", [])
+    if not analyses:
+        return ""
+
+    rows = ""
+    for a in reversed(analyses[-10:]):
+        type_color = {"OPEN": "#4488ff", "WON": "#00ff88", "LOST": "#ff4444"}.get(a["type"], "#888")
+        rows += f"""
+        <div class="analysis-entry">
+            <span style="color:#555">{a['time']}</span>
+            <span style="color:{type_color};font-weight:bold">[{a['type']}]</span>
+            <span style="color:#888">{a['strategy']}</span>
+            <span>{a['market']}</span>
+            <div style="color:#aaa;font-size:11px;margin-top:3px">{a['analysis'][:150]}</div>
+        </div>"""
+
+    return f"""
+    <div class="analysis-panel">
+        <h2>AI Trade Analysis (Live)</h2>
+        {rows}
+    </div>"""
+
+
 def render_dashboard(config):
-    """Render the multi-strategy dashboard."""
+    """Render the full dashboard."""
     opps = state["all_opportunities"]
     musk_opps = state["musk_opportunities"]
     error_html = f'<div class="error">{state["error"]}</div>' if state["error"] else ""
-    scanning = " 🔄" if state["scanning"] else ""
+    scanning = " (scanning...)" if state["scanning"] else ""
 
-    # Render all 3 strategy cards
     cards = ""
     for key, s in state["strategies"].items():
         cards += render_strategy_card(key, s)
 
-    # Top penny opportunities
+    tweet_panel = render_tweet_panel()
+    analysis_panel = render_analysis_panel()
+
     opp_rows = ""
     for o in opps[:15]:
         potential = 1.0 / o.price if o.price > 0 else 0
-        is_musk = "🐦" if any(kw in o.market_question.lower() for kw in ["musk", "elon", "tweet"]) else ""
+        is_musk = "[M]" if any(kw in o.market_question.lower() for kw in ["musk", "elon", "tweet"]) else ""
         opp_rows += f"""
         <tr>
             <td>{is_musk} {o.outcome}</td>
-            <td>{o.price*100:.1f}¢</td>
-            <td>${4 * potential:.0f}</td>
+            <td>{o.price*100:.1f}c</td>
+            <td>${5 * potential:.0f}</td>
             <td>{o.market_question[:65]}</td>
         </tr>"""
 
     return f"""<!DOCTYPE html>
 <html>
 <head>
-    <title>Penny Bot — 3 Strategies</title>
+    <title>Penny Bot — Strategy Race + Tweet Tracker</title>
     <meta http-equiv="refresh" content="30">
     <style>
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
@@ -254,6 +376,9 @@ def render_dashboard(config):
         .error {{ background: #2a0a0a; color: #ff4444; padding: 10px; border-radius: 8px; margin: 10px 0; }}
         .grid {{ display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px; margin: 15px 0; }}
         .strategy {{ background: #111; border: 1px solid #222; border-radius: 10px; padding: 15px; }}
+        .tweet-panel {{ background: #111; border: 1px solid #1a3a1a; border-radius: 10px; padding: 15px; margin: 15px 0; }}
+        .analysis-panel {{ background: #111; border: 1px solid #1a1a3a; border-radius: 10px; padding: 15px; margin: 15px 0; }}
+        .analysis-entry {{ padding: 8px 0; border-bottom: 1px solid #1a1a1a; font-size: 12px; }}
         .stats {{ display: flex; gap: 10px; margin: 10px 0; flex-wrap: wrap; }}
         .stat {{ background: #1a1a2e; padding: 8px 12px; border-radius: 6px; }}
         .stat .label {{ color: #888; font-size: 10px; }}
@@ -269,12 +394,13 @@ def render_dashboard(config):
         tr.lost {{ background: #2a0a0a; }}
         .badge {{ display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; background: #ffcc0033; color: #ffcc00; }}
         .bottom {{ margin-top: 20px; }}
+        .two-col {{ display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }}
     </style>
 </head>
 <body>
     <div class="header">
         <div>
-            <h1>🎰 Polymarket Penny Bot — Strategy Race</h1>
+            <h1>Polymarket Penny Bot — Strategy Race</h1>
             <span class="badge">PAPER TRADING $100 each</span>{scanning}
         </div>
         <div class="time">
@@ -284,17 +410,22 @@ def render_dashboard(config):
 
     {error_html}
 
+    {tweet_panel}
+
     <div class="grid">
         {cards}
     </div>
 
-    <div class="bottom">
-        <h2>🔍 Live Penny Markets</h2>
-        {'<table><tr><th>Side</th><th>Price</th><th>$4 Payout</th><th>Market</th></tr>' + opp_rows + '</table>' if opp_rows else '<p style="color:#555">Scanning...</p>'}
+    <div class="two-col">
+        {analysis_panel}
+        <div class="bottom">
+            <h2>Live Penny Markets</h2>
+            {'<table><tr><th>Side</th><th>Price</th><th>$5 Payout</th><th>Market</th></tr>' + opp_rows + '</table>' if opp_rows else '<p style="color:#555">Scanning...</p>'}
+        </div>
     </div>
 
     <p style="color:#333; margin-top:15px; font-size:10px;">
-        3 strategies racing with $100 virtual each. Best P&L after 1 week wins.
+        3 strategies racing with $100 virtual each. Musk strategy uses REAL tweet data. AI analyzes every trade.
     </p>
 </body>
 </html>"""
@@ -317,14 +448,15 @@ def run_dashboard(port=8888):
     config = Config()
     DashboardHandler.config = config
 
-    # Start scanner + trader in background
     worker = threading.Thread(target=scan_and_trade, args=(config,), daemon=True)
     worker.start()
 
     server = HTTPServer(("0.0.0.0", port), DashboardHandler)
     print(f"\n{'='*50}")
-    print(f"  🎰 Penny Bot — Strategy Race")
-    print(f"  3 strategies, $100 each, 1 week")
+    print(f"  Penny Bot — Strategy Race + Tweet Tracker")
+    print(f"  3 strategies, $100 each")
+    print(f"  Musk tweets tracked LIVE")
+    print(f"  AI analyzes every trade")
     print(f"  Open: http://localhost:{port}")
     print(f"  Ctrl+C to stop")
     print(f"{'='*50}\n")

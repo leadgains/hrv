@@ -4,6 +4,8 @@ paper_trades.json
 paper_penny_all.json
 paper_penny_musk.json
 paper_penny_blind.json
+trade_learnings.json
+musk_tweet_cache.json
 penny_bot.log
 __pycache__/
 *.pyc

@@ -11,6 +11,7 @@ except ImportError:
 from dataclasses import dataclass
 
 from scanner import PennyOpportunity
+from trade_analyzer import get_learnings_summary
 
 log = logging.getLogger(__name__)
 
@@ -78,7 +79,10 @@ IMPORTANT RULES:
 - A 3¢ share means the market thinks there's a 3% chance. If you think it's really 6%+, that's a BUY.
 - Consider timing — events happening soon with new information the market hasn't priced in are the best opportunities
 - Be honest when you don't know enough about a topic — mark those as SKIP with LOW confidence
-- Think about what could cause a surprise outcome that the crowd is underestimating"""
+- Think about what could cause a surprise outcome that the crowd is underestimating
+
+PAST TRADE LEARNINGS (use these to improve picks):
+{get_learnings_summary()}"""
 
 
 def research_opportunities(
