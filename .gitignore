@@ -1,6 +1,9 @@
 .env
 trades.json
 paper_trades.json
+paper_penny_all.json
+paper_penny_musk.json
+paper_penny_blind.json
 penny_bot.log
 __pycache__/
 *.pyc
