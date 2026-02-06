@@ -10,6 +10,7 @@ import time
 import sys
 
 DEMO_MODE = "--demo" in sys.argv
+PAPER_MODE = "--paper" in sys.argv
 
 try:
     from py_clob_client.client import ClobClient
@@ -19,6 +20,7 @@ except ImportError:
 from config import Config
 from scanner import scan_for_pennies
 from trader import Trader
+from paper_trader import PaperTrader
 from notifier import TelegramNotifier
 from researcher import research_opportunities, format_research_for_telegram
 from musk_analyzer import (
@@ -38,14 +40,18 @@ logging.basicConfig(
 log = logging.getLogger("penny_bot")
 
 
-def create_client(config: Config) -> ClobClient:
-    """Create authenticated Polymarket CLOB client."""
+def create_client(config: Config):
+    """Create Polymarket CLOB client."""
     if DEMO_MODE:
         log.info("DEMO MODE — no real API connection")
         return None
 
+    if ClobClient is None:
+        log.warning("py-clob-client not installed — read-only mode")
+        return None
+
     if not config.private_key:
-        log.error("No POLYMARKET_PRIVATE_KEY set. Running in read-only mode.")
+        log.info("No wallet key — read-only mode (can scan but not trade)")
         return ClobClient(config.clob_url)
 
     client = ClobClient(
@@ -69,17 +75,79 @@ def get_opportunities(client, config):
     return scan_for_pennies(client, config.min_price_cents, config.max_price_cents)
 
 
-def run_scan_cycle(client, trader, notifier, config):
-    """Run one scan + AI research + trade cycle."""
+def run_paper_cycle(client, paper, notifier, config):
+    """Paper trading cycle — real data, fake money."""
 
-    # Step 1: Scan for penny shares
+    # Scan real markets
     opportunities = get_opportunities(client, config)
+    if not opportunities:
+        log.info("No penny opportunities this cycle")
+        return
 
+    new_opps = [o for o in opportunities if o.token_id not in paper.bought_tokens]
+    log.info(f"{len(new_opps)} new opportunities (of {len(opportunities)} total)")
+
+    if not new_opps:
+        # Still check resolutions on existing positions
+        if client and not DEMO_MODE:
+            resolved = paper.check_resolutions(client)
+            if resolved:
+                for t in resolved:
+                    icon = "✅" if t.status == "won" else "❌"
+                    notifier.send_sync(
+                        f"{icon} <b>PAPER {t.status.upper()}</b>\n"
+                        f"{t.market[:60]}\n"
+                        f"${t.amount:.2f} → ${t.payout:.2f}"
+                    )
+        return
+
+    # AI Research
+    log.info(f"AI analyzing {len(new_opps)} opportunities...")
+    results = research_opportunities(new_opps, batch_size=15)
+
+    buys = [r for r in results if r.recommendation == "BUY"]
+    buys.sort(key=lambda r: r.score, reverse=True)
+
+    if not buys:
+        log.info("AI found no mispriced opportunities")
+        return
+
+    log.info(f"AI recommends {len(buys)} buys")
+
+    for result in buys:
+        opp = result.opportunity
+        amount = min(config.max_spend_per_trade, paper.budget - paper.total_spent)
+        if amount < 0.10:
+            break
+
+        trade = paper.buy(opp, amount)
+        if trade:
+            msg = (
+                f"📝 <b>PAPER BUY</b> (Score: {result.score}/100)\n"
+                f"{opp.market_question[:70]}\n"
+                f"{opp.outcome} @ {opp.price*100:.1f}¢ — ${amount:.2f}\n"
+                f"AI: {result.reasoning[:100]}\n"
+                f"If wins: ${trade.shares:.2f} payout"
+            )
+            notifier.send_sync(msg)
+            log.info(msg.replace("<b>", "").replace("</b>", ""))
+            time.sleep(1)
+
+    # Check resolutions
+    if client and not DEMO_MODE:
+        paper.check_resolutions(client)
+
+    log.info(paper.get_summary_short())
+
+
+def run_scan_cycle(client, trader, notifier, config):
+    """Real trading cycle — scan + AI research + trade."""
+
+    opportunities = get_opportunities(client, config)
     if not opportunities:
         log.info("No penny opportunities found this cycle")
         return
 
-    # Filter out already bought
     new_opps = [o for o in opportunities if o.token_id not in trader.bought_tokens]
     log.info(f"{len(new_opps)} new opportunities (of {len(opportunities)} total)")
 
@@ -87,16 +155,12 @@ def run_scan_cycle(client, trader, notifier, config):
         log.info("No new opportunities to trade")
         return
 
-    # Step 2: AI Research — Claude analyzes which ones are mispriced
     log.info(f"Sending {len(new_opps)} opportunities to Claude for analysis...")
     research_results = research_opportunities(new_opps, batch_size=15)
 
-    # Send research summary to Telegram
     research_msg = format_research_for_telegram(research_results)
     notifier.send_sync(research_msg)
-    log.info(research_msg)
 
-    # Step 3: Only buy what Claude recommends
     buys = [r for r in research_results if r.recommendation == "BUY"]
     buys.sort(key=lambda r: r.score, reverse=True)
 
@@ -116,7 +180,6 @@ def run_scan_cycle(client, trader, notifier, config):
 
         amount = min(config.max_spend_per_trade, config.total_budget - trader.total_spent)
         if amount < 0.10:
-            log.info("Remaining budget too small, stopping")
             break
 
         if DEMO_MODE:
@@ -125,9 +188,6 @@ def run_scan_cycle(client, trader, notifier, config):
                 f"DEMO BUY: {shares:.0f}x {opp.outcome} @ {opp.price*100:.1f}¢ "
                 f"for ${amount:.2f} — {opp.market_question[:60]}"
             )
-            log.info(f"  AI reason: {result.reasoning[:100]}")
-            log.info(f"  AI score: {result.score}/100 | est. value: {result.fair_value_estimate*100:.0f}%")
-            log.info(f"  Max payout if wins: ${shares:.2f}")
             trader.total_spent += amount
             trader.bought_tokens.add(opp.token_id)
         else:
@@ -149,20 +209,59 @@ def run_scan_cycle(client, trader, notifier, config):
 def main():
     config = Config()
 
-    if DEMO_MODE:
-        log.info("=" * 60)
-        log.info("  DEMO MODE — Simulated markets, no real trades")
-        log.info("=" * 60)
-
-    log.info("Starting Polymarket Penny Bot 🎰🧠")
-    log.info(f"Budget: ${config.total_budget} | Max per trade: ${config.max_spend_per_trade}")
+    mode = "DEMO" if DEMO_MODE else "PAPER $100" if PAPER_MODE else "LIVE"
+    log.info(f"{'='*60}")
+    log.info(f"  Polymarket Penny Bot — {mode} MODE")
+    log.info(f"{'='*60}")
+    log.info(f"Budget: ${config.total_budget} | Max/trade: ${config.max_spend_per_trade}")
     log.info(f"Price range: {config.min_price_cents}¢ - {config.max_price_cents}¢")
 
     client = create_client(config)
-    trader = Trader(config=config, client=client)
     notifier = TelegramNotifier(config.telegram_bot_token, config.telegram_chat_id)
 
-    # --demo --scan: show what penny markets look like
+    # Paper trading mode
+    if PAPER_MODE:
+        paper = PaperTrader(config=config, budget=100.0)
+
+        if "--status" in sys.argv:
+            print(paper.get_summary())
+            return
+
+        notifier.send_sync(
+            f"📝 <b>Paper Trading Started</b>\n"
+            f"Virtual budget: $100\n"
+            f"Scanning every {config.check_interval}s\n"
+            f"AI analyzes before every buy"
+        )
+
+        log.info(paper.get_summary_short())
+
+        if "--once" in sys.argv:
+            run_paper_cycle(client, paper, notifier, config)
+            print(paper.get_summary())
+            return
+
+        # 24/7 paper trading loop
+        while True:
+            try:
+                run_paper_cycle(client, paper, notifier, config)
+            except KeyboardInterrupt:
+                log.info("Shutting down paper trader...")
+                notifier.send_sync("🛑 Paper trading stopped")
+                break
+            except Exception as e:
+                log.error(f"Cycle error: {e}", exc_info=True)
+
+            log.info(f"Next scan in {config.check_interval}s... | {paper.get_summary_short()}")
+            time.sleep(config.check_interval)
+
+        print(paper.get_summary())
+        return
+
+    # Real/demo trading
+    trader = Trader(config=config, client=client)
+
+    # --scan
     if "--scan" in sys.argv:
         opps = get_opportunities(client, config)
         print(f"\n{'='*60}")
@@ -175,11 +274,10 @@ def main():
                 f"${config.max_spend_per_trade:.0f} bet → ${config.max_spend_per_trade * potential:.0f} max payout  |  "
                 f"{o.market_question[:55]}"
             )
-        print(f"\n  Budget: ${config.total_budget} over {len(opps)} markets")
-        print(f"  Strategy: AI picks the mispriced ones, skips the rest\n")
+        print(f"\n  Budget: ${config.total_budget} | Strategy: AI picks mispriced ones\n")
         return
 
-    # --demo --research: show AI analysis without trading
+    # --research
     if "--research" in sys.argv:
         opps = get_opportunities(client, config)
         if not opps:
@@ -214,16 +312,13 @@ def main():
             print(f"  If all {len(buys)} BUY picks win: ${total_potential:.2f} payout on ${len(buys) * config.max_spend_per_trade:.2f} spent")
         return
 
-    # --once: full cycle (scan + AI + simulated trade)
+    # --once
     if "--once" in sys.argv:
-        print(f"\n{'='*60}")
-        print(f"  FULL CYCLE — Scan → AI Research → {'Demo ' if DEMO_MODE else ''}Trade")
-        print(f"{'='*60}\n")
         run_scan_cycle(client, trader, notifier, config)
         print(f"\n{trader.get_summary()}")
         return
 
-    # --musk: Elon Musk tweet strategy
+    # --musk
     if "--musk" in sys.argv:
         if DEMO_MODE:
             from demo_data import DEMO_MARKETS
@@ -238,7 +333,6 @@ def main():
         print(f"\n{'='*60}")
         print(f"  MUSK TWEET STRATEGY (Annica-style)")
         print(f"{'='*60}\n")
-        print(f"  Found {len(musk_opps)} Musk tweet ranges:\n")
         for o in musk_opps:
             print(f"    {o.outcome} @ {o.price*100:.1f}¢ — {o.market_question}")
 
@@ -253,7 +347,7 @@ def main():
             print(f"  Expected range: {picks[0].get('estimated_range', '?')} tweets")
         return
 
-    # Main loop (24/7)
+    # Main 24/7 loop
     notifier.send_sync(
         f"🚀 <b>Penny Bot Started (24/7)</b>\n"
         f"Budget: ${config.total_budget}\n"
