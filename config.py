@@ -20,9 +20,9 @@ class Config:
     # Penny strategy
     max_price_cents: int = int(os.getenv("MAX_PRICE_CENTS", "9"))
     min_price_cents: int = int(os.getenv("MIN_PRICE_CENTS", "1"))
-    max_spend_per_trade: float = float(os.getenv("MAX_SPEND_PER_TRADE", "2.0"))
-    total_budget: float = float(os.getenv("TOTAL_BUDGET", "10.0"))
-    daily_loss_limit: float = float(os.getenv("DAILY_LOSS_LIMIT", "5.0"))
+    max_spend_per_trade: float = float(os.getenv("MAX_SPEND_PER_TRADE", "5.0"))
+    total_budget: float = float(os.getenv("TOTAL_BUDGET", "100.0"))
+    daily_loss_limit: float = float(os.getenv("DAILY_LOSS_LIMIT", "20.0"))
     check_interval: int = int(os.getenv("CHECK_INTERVAL_SECONDS", "60"))
     min_volume: int = int(os.getenv("MIN_VOLUME", "100"))
     min_liquidity: float = float(os.getenv("MIN_LIQUIDITY", "50"))
