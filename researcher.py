@@ -1,4 +1,5 @@
 """AI Research Layer — Uses Claude to analyze penny opportunities before buying."""
+from __future__ import annotations
 
 import os
 import json

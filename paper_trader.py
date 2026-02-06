@@ -1,4 +1,5 @@
 """Paper trading engine — tracks virtual positions with real market data."""
+from __future__ import annotations
 
 import json
 import logging

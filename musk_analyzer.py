@@ -1,4 +1,5 @@
 """Elon Musk Tweet Analyzer — Predicts weekly tweet ranges for Polymarket."""
+from __future__ import annotations
 
 import os
 import json

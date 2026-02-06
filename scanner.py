@@ -1,4 +1,5 @@
 """Scans Polymarket for penny opportunities (shares priced 1-9 cents)."""
+from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
