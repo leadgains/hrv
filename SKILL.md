@@ -1,6 +1,6 @@
 # Polymarket Penny Bot — OpenClaw Skill
 
-AI-powered Polymarket penny trading bot. Scans for shares priced 1-9¢, uses Claude to identify mispriced opportunities, and auto-buys the best ones.
+AI-powered Polymarket penny trading bot. Scans for shares priced 1-9c, tracks Elon Musk's real-time tweet activity, uses Claude to find mispriced opportunities, and auto-trades the best ones.
 
 ## Capabilities
 
@@ -13,19 +13,27 @@ AI-powered Polymarket penny trading bot. Scans for shares priced 1-9¢, uses Cla
 - Claude analyzes each penny opportunity for mispricing
 - Estimates true probability vs market price
 - Only recommends BUY when estimated value is 2x+ the market price
-- Scores each opportunity 0-100
+- Learns from past trades and feeds insights back into future picks
 
-### Musk Tweet Strategy (Annica-style)
-- Specialized module for Elon Musk tweet count markets
-- Analyzes posting patterns, current news, Tesla/SpaceX events
-- Picks underpriced tweet ranges and allocates budget
-- Based on the strategy of top trader "Annica" ($267K profit, 84.8% win rate)
+### Musk Tweet Strategy (Real-Time)
+- Tracks Elon Musk's actual posting activity via fxtwitter/nitter
+- Calculates posting speed (tweets/hour) and projects weekly total
+- Finds tweet-count ranges the market is underpricing
+- AI validates picks using news context + real tweet data
+- Falls back to pure math projection if no AI key
 
-### Trading
-- Auto-buys AI-recommended positions via Polymarket CLOB API
-- Budget limits, daily loss limits, max per trade
-- Persistent trade logging (trades.json)
-- Telegram notifications for every buy
+### Trade Analysis (Self-Improving)
+- AI reviews every trade on open and close
+- Tracks patterns: what works, what doesn't
+- Accumulates learnings in trade_learnings.json
+- Feeds past insights into future research prompts
+
+### 3-Strategy Race (Paper Trading)
+- Strategy 1: All Penny with AI picks
+- Strategy 2: Musk Tweets Only (real tweet data)
+- Strategy 3: Blind (cheapest first, no AI)
+- Each gets $100 virtual, best P&L wins
+- Live web dashboard at localhost:8888
 
 ### Portfolio Monitoring
 - Track all open positions
@@ -34,96 +42,87 @@ AI-powered Polymarket penny trading bot. Scans for shares priced 1-9¢, uses Cla
 
 ## Commands
 
+### Start dashboard (recommended)
+```bash
+scripts/penny.sh dashboard
+```
+Web dashboard at localhost:8888 — shows strategies, tweet tracker, AI analysis.
+
 ### Scan for opportunities
 ```bash
 scripts/penny.sh scan
 ```
-Lists all penny-priced shares with payout math.
 
 ### AI research (analyze without buying)
 ```bash
 scripts/penny.sh research
 ```
-Claude analyzes all penny opportunities and ranks them by mispricing score.
 
 ### Run one full cycle (scan + AI + buy)
 ```bash
 scripts/penny.sh trade
 ```
-Scans, analyzes, and buys the top AI-recommended positions.
+
+### Musk tweet tracker
+```bash
+scripts/penny.sh tweets
+```
+Shows Musk's current posting speed, projected weekly total, activity level.
 
 ### Musk tweet strategy
 ```bash
 scripts/penny.sh musk
 ```
-Analyzes Musk tweet markets and picks the best ranges.
-
-### Musk tweet strategy (preview only)
-```bash
-scripts/penny.sh musk-dry
-```
-Shows what Claude would pick without buying.
 
 ### Check portfolio
 ```bash
 scripts/penny.sh portfolio
 ```
-Shows current positions, P&L, and budget status.
+
+### Trade analysis report
+```bash
+scripts/penny.sh report
+```
+Shows accumulated AI learnings and strategy performance.
 
 ### Start 24/7 bot
 ```bash
 scripts/penny.sh start
 ```
-Starts the bot in continuous mode. Scans every 60 seconds.
 
 ### Stop bot
 ```bash
 scripts/penny.sh stop
 ```
-Stops the running bot.
 
 ### Bot status
 ```bash
 scripts/penny.sh status
 ```
-Shows if the bot is running and recent activity.
 
 ## Configuration
 
-Config file: `config.json` in the skill directory.
+Set via `.env` file or `config.json`:
 
-```json
-{
-  "polymarket_private_key": "your_wallet_private_key",
-  "polymarket_funder": "your_wallet_address",
-  "anthropic_api_key": "your_anthropic_api_key",
-  "telegram_bot_token": "your_telegram_bot_token",
-  "telegram_chat_id": "your_chat_id",
-  "total_budget": 20.0,
-  "max_spend_per_trade": 4.0,
-  "daily_loss_limit": 5.0,
-  "max_price_cents": 9,
-  "min_price_cents": 1,
-  "check_interval_seconds": 60
-}
+```
+POLYMARKET_PRIVATE_KEY=your_wallet_private_key
+POLYMARKET_FUNDER=your_wallet_address
+ANTHROPIC_API_KEY=your_anthropic_api_key
+TELEGRAM_BOT_TOKEN=your_telegram_bot_token
+TELEGRAM_CHAT_ID=your_chat_id
+TOTAL_BUDGET=100.0
+MAX_SPEND_PER_TRADE=5.0
+DAILY_LOSS_LIMIT=20.0
+CHECK_INTERVAL_SECONDS=60
 ```
 
 ## Usage Examples
 
+- "Start the dashboard"
 - "Scan polymarket for penny opportunities"
-- "What are the cheap shares on polymarket right now?"
+- "How many tweets has Musk posted this week?"
 - "Analyze the penny markets with AI"
-- "Buy the best penny positions"
-- "How is Musk's tweet week looking?"
 - "Run the musk tweet strategy"
-- "Show my polymarket portfolio"
+- "Show my portfolio"
+- "Show the trade analysis report"
 - "Start the penny bot"
-- "Stop the penny bot"
-- "How much have I spent so far?"
-- "What's my P&L?"
-
-## References
-
-- [Polymarket CLOB API](https://docs.polymarket.com/)
-- [py-clob-client](https://github.com/Polymarket/py-clob-client)
-- Strategy inspired by trader [Annica](https://polymarket.com/@Annica) — $267K profit on Musk tweet markets

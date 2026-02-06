@@ -14,9 +14,9 @@ if [ -f "$BOT_DIR/config.json" ]; then
     export ANTHROPIC_API_KEY=$(python3 -c "import json; print(json.load(open('$BOT_DIR/config.json')).get('anthropic_api_key',''))" 2>/dev/null)
     export TELEGRAM_BOT_TOKEN=$(python3 -c "import json; print(json.load(open('$BOT_DIR/config.json')).get('telegram_bot_token',''))" 2>/dev/null)
     export TELEGRAM_CHAT_ID=$(python3 -c "import json; print(json.load(open('$BOT_DIR/config.json')).get('telegram_chat_id',''))" 2>/dev/null)
-    export TOTAL_BUDGET=$(python3 -c "import json; print(json.load(open('$BOT_DIR/config.json')).get('total_budget',20.0))" 2>/dev/null)
-    export MAX_SPEND_PER_TRADE=$(python3 -c "import json; print(json.load(open('$BOT_DIR/config.json')).get('max_spend_per_trade',4.0))" 2>/dev/null)
-    export DAILY_LOSS_LIMIT=$(python3 -c "import json; print(json.load(open('$BOT_DIR/config.json')).get('daily_loss_limit',5.0))" 2>/dev/null)
+    export TOTAL_BUDGET=$(python3 -c "import json; print(json.load(open('$BOT_DIR/config.json')).get('total_budget',100.0))" 2>/dev/null)
+    export MAX_SPEND_PER_TRADE=$(python3 -c "import json; print(json.load(open('$BOT_DIR/config.json')).get('max_spend_per_trade',5.0))" 2>/dev/null)
+    export DAILY_LOSS_LIMIT=$(python3 -c "import json; print(json.load(open('$BOT_DIR/config.json')).get('daily_loss_limit',20.0))" 2>/dev/null)
     export MAX_PRICE_CENTS=$(python3 -c "import json; print(json.load(open('$BOT_DIR/config.json')).get('max_price_cents',9))" 2>/dev/null)
     export MIN_PRICE_CENTS=$(python3 -c "import json; print(json.load(open('$BOT_DIR/config.json')).get('min_price_cents',1))" 2>/dev/null)
     export CHECK_INTERVAL_SECONDS=$(python3 -c "import json; print(json.load(open('$BOT_DIR/config.json')).get('check_interval_seconds',60))" 2>/dev/null)
@@ -47,6 +47,21 @@ case "$CMD" in
     musk-dry)
         cd "$BOT_DIR" && python3 bot.py --musk --dry
         ;;
+    tweets)
+        cd "$BOT_DIR" && python3 -c "
+from tweet_tracker import get_musk_activity_summary
+print(get_musk_activity_summary())
+"
+        ;;
+    dashboard)
+        cd "$BOT_DIR" && python3 dashboard.py
+        ;;
+    report)
+        cd "$BOT_DIR" && python3 -c "
+from trade_analyzer import get_strategy_report
+print(get_strategy_report())
+"
+        ;;
     portfolio)
         cd "$BOT_DIR" && python3 -c "
 from trader import Trader
@@ -54,20 +69,16 @@ from config import Config
 config = Config()
 trader = Trader(config=config, client=None)
 print(trader.get_summary())
-if trader.trades:
-    print()
-    for t in trader.trades[-10:]:
-        icon = {'open': '⏳', 'won': '✅', 'lost': '❌'}.get(t.status, '❓')
-        print(f'  {icon} {t.outcome} @ {t.price*100:.1f}¢ — \${t.amount:.2f} — {t.market[:60]}')
 "
         ;;
     start)
         if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
             echo "Bot is already running (PID: $(cat "$PIDFILE"))"
         else
-            cd "$BOT_DIR" && nohup python3 bot.py > "$LOGFILE" 2>&1 &
+            cd "$BOT_DIR" && nohup python3 dashboard.py > "$LOGFILE" 2>&1 &
             echo $! > "$PIDFILE"
-            echo "Bot started (PID: $!)"
+            echo "Bot + Dashboard started (PID: $!)"
+            echo "Dashboard: http://localhost:8888"
             echo "Logs: $LOGFILE"
         fi
         ;;
@@ -98,13 +109,16 @@ if trader.trades:
         ;;
     help|*)
         echo "Polymarket Penny Bot — Commands:"
+        echo "  dashboard  — Start web dashboard (localhost:8888)"
         echo "  scan       — List penny-priced shares"
         echo "  research   — AI analysis of opportunities"
         echo "  trade      — Run one full cycle (scan + AI + buy)"
+        echo "  tweets     — Show Musk's live tweet activity"
         echo "  musk       — Musk tweet strategy (buy)"
         echo "  musk-dry   — Musk tweet strategy (preview)"
+        echo "  report     — AI trade analysis report"
         echo "  portfolio  — Show positions and P&L"
-        echo "  start      — Start 24/7 bot"
+        echo "  start      — Start 24/7 bot + dashboard"
         echo "  stop       — Stop the bot"
         echo "  status     — Check if bot is running"
         ;;
